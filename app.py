@@ -1,5 +1,6 @@
 import asyncio
 import platform
+import sys
 
 from bleak import BleakClient, BleakScanner
 from bleak.uuids import uuid16_dict
@@ -58,6 +59,14 @@ DEVICE_CONFIG_UUID = "45544942-4c55-4554-4845-524db87ad709"
 UNKNOWN_UUID = "45544942-4c55-4554-4845-524db87ad70a"
 
 
+def ieee745(N):  # ieee-745 bits (max 32 bit)
+    a = int(N[0])        # sign,     1 bit
+    b = int(N[1:9], 2)    # exponent, 8 bits
+    c = int("1"+N[9:], 2)  # fraction, len(N)-9 bits
+
+    return (-1)**a * c / (1 << (len(N)-9 - (b-127)))
+
+
 async def main(address):
     async with BleakClient(address) as client:
         print("\nDecoded Info:\n")
@@ -90,14 +99,14 @@ async def main(address):
         probe_1_name = await client.read_gatt_char(CHANNEL_1_CONFIG_UUID)
         print(f"Channel 1 Config Bytes: {probe_1_name.hex(' ')}")
         print(f"Channel 1 Name: {probe_1_name[8:20]}")
-        print(f"Channel 1 Alarm Low: {probe_1_name[4:7].hex()}")
-        print(f"Channel 1 Alarm High: {probe_1_name[0:3].hex()}")
+        print(f"Channel 1 Alarm Low: {probe_1_name[4:8].hex()}")
+        print(f"Channel 1 Alarm High: {probe_1_name[0:4].hex()}")
 
         probe_2_name = await client.read_gatt_char(CHANNEL_2_CONFIG_UUID)
         print(f"Channel 2 Config Bytes: {probe_2_name.hex(' ')}")
         print(f"Channel 2 Name: {probe_2_name[8:20]}")
-        print(f"Channel 2 Alarm Low: {probe_2_name[4:7].hex()}")
-        print(f"Channel 2 Alarm High: {probe_2_name[0:3].hex()}")
+        print(f"Channel 2 Alarm Low: {probe_2_name[4:8].hex()}")
+        print(f"Channel 2 Alarm High: {probe_2_name[0:4].hex()}")
 
         device_config = await client.read_gatt_char(DEVICE_CONFIG_UUID)
         print(f"\nDevice Config: {device_config.hex(' ')}")
@@ -123,7 +132,7 @@ async def main(address):
         channel_1 = await client.read_gatt_char(CHANNEL_1_DATA_UUID)
         print(f"\nChannel 1 Data Bytes: {channel_1.hex(' ')}")
         channel_1_temp_float = int(channel_1.hex(), 16)
-        print(f"Channel 1 Temp Int16: {channel_1_temp_float}")
+        print(f"Channel 1 Temp Int32: {channel_1_temp_float}")
         channel_1_temp = channel_1_temp_float / 32
         if channel_1_temp_float == 4294967295:
             print("Channel 1 Temp: Error")
@@ -133,7 +142,7 @@ async def main(address):
         channel_2 = await client.read_gatt_char(CHANNEL_2_DATA_UUID)
         print(f"\nChannel 2 Data Bytes: {channel_2.hex(' ')}")
         channel_2_temp_float = int(channel_2.hex(), 16)
-        print(f"Channel 2 Temp Int16: {channel_2_temp_float}")
+        print(f"Channel 2 Temp Int32: {channel_2_temp_float}")
         channel_2_temp = channel_2_temp_float / 32
         if not channel_2_enable:
             print("Channel 2 Temp: Disabled")
@@ -144,6 +153,24 @@ async def main(address):
 
         unknown_char = await client.read_gatt_char(UNKNOWN_UUID)
         print(f"\nUnknown Raw Bytes: {unknown_char.hex(' ')}")
+
+        trim_channel_1 = unknown_char[:4]
+        trim_channel_1_swap = bytes(reversed(trim_channel_1))
+        trim_channel_1_bin = bin(int.from_bytes(
+            trim_channel_1_swap, byteorder="big"))
+        trim_channel_1_ieee745 = ieee745(trim_channel_1_bin)
+        unknown_channel_1 = unknown_char[4:7]
+        print(f"Channel 1 Trim: {trim_channel_1_ieee745}")
+        print(f"Channel 1 Unknown: {unknown_channel_1}")
+
+        trim_channel_2 = unknown_char[7:11]
+        trim_channel_2_swap = bytes(reversed(trim_channel_2))
+        trim_channel_2_bin = bin(int.from_bytes(
+            trim_channel_2_swap, byteorder="big"))
+        trim_channel_2_ieee745 = ieee745(trim_channel_2_bin)
+        unknown_channel_2 = unknown_char[11:]
+        print(f"Channel 2 Trim: {trim_channel_2_ieee745}")
+        print(f"Channel 2 Unknown: {unknown_channel_2}")
 
         unknown_2_char = await client.read_gatt_char(UNKNOWN_2_UUID)
         print(f"\nUnknown Raw Bytes: {unknown_2_char.hex(' ')}")
