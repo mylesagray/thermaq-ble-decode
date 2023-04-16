@@ -95,22 +95,49 @@ async def main(address):
         probe_1_data = await client.read_gatt_char(CHANNEL_1_CONFIG_UUID)
         probe_1_name_data = probe_1_data[8:20]
         probe_1_name = probe_1_name_data.decode()
+        probe_1_alarm_low_data = round(
+            struct.unpack('<f', probe_1_data[4:8])[0], 2)
+        probe_1_alarm_high_data = round(
+            struct.unpack('<f', probe_1_data[0:4])[0], 2)
+        if not math.isnan(probe_1_alarm_low_data):
+            probe_1_alarm_low = probe_1_alarm_low_data
+        else:
+            probe_1_alarm_low = 'Diabled'
+
+        if not math.isnan(probe_1_alarm_high_data):
+            probe_1_alarm_high = probe_1_alarm_high_data
+        else:
+            probe_1_alarm_high = 'Diabled'
+
         print(f"Channel 1 Config Bytes: {probe_1_data.hex(' ')}")
         print(f"Channel 1 Name: {probe_1_name}")
         print(
-            f"Channel 1 Alarm Low: {round(struct.unpack('<f', probe_1_data[4:8])[0], 2)}")
+            f"Channel 1 Alarm Low: {probe_1_alarm_low}")
         print(
-            f"Channel 1 Alarm High: {round(struct.unpack('<f', probe_1_data[0:4])[0], 2)}")
+            f"Channel 1 Alarm High: {probe_1_alarm_high}")
 
         probe_2_data = await client.read_gatt_char(CHANNEL_2_CONFIG_UUID)
         probe_2_name_data = probe_2_data[8:20]
         probe_2_name = probe_2_name_data.decode()
+        probe_2_alarm_low_data = round(
+            struct.unpack('<f', probe_2_data[4:8])[0], 2)
+        probe_2_alarm_high_data = round(
+            struct.unpack('<f', probe_2_data[0:4])[0], 2)
+        if not math.isnan(probe_2_alarm_low_data):
+            probe_2_alarm_low = probe_2_alarm_low_data
+        else:
+            probe_2_alarm_low = 'Diabled'
+
+        if not math.isnan(probe_2_alarm_high_data):
+            probe_2_alarm_high = probe_2_alarm_high_data
+        else:
+            probe_2_alarm_high = 'Diabled'
         print(f"Channel 2 Config Bytes: {probe_2_data.hex(' ')}")
         print(f"Channel 2 Name: {probe_2_name}")
         print(
-            f"Channel 2 Alarm Low: {round(struct.unpack('<f', probe_2_data[4:8])[0], 2)}")
+            f"Channel 2 Alarm Low: {probe_2_alarm_low}")
         print(
-            f"Channel 2 Alarm High: {round(struct.unpack('<f', probe_2_data[0:4])[0], 2)}")
+            f"Channel 2 Alarm High: {probe_2_alarm_high}")
 
         # Device Config Characteristic
         device_config = await client.read_gatt_char(DEVICE_CONFIG_UUID)
