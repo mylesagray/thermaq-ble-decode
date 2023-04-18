@@ -187,7 +187,7 @@ async def main(address):
         channel_2 = await client.read_gatt_char(CHANNEL_2_DATA_UUID)
         print(f"\nChannel 2 Data Bytes: {channel_2.hex(' ')}")
         channel_2_temp_float = struct.unpack('<f', channel_2)
-        channel_2_temp = channel_2_temp_float[0]
+        channel_2_temp = round(channel_2_temp_float[0], 2)
         if not channel_2_enable:
             print("Channel 2 Temp (notifiable): Disabled")
         elif math.isnan(channel_2_temp):
