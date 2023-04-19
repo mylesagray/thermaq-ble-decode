@@ -1,7 +1,11 @@
+"""
+Module to decode BLE commands from ETI Ltd Bluetooth Low Energy Thermometers
+"""
 import asyncio
 import platform
 import struct
 import math
+import logging
 
 from bleak import BleakClient, BleakScanner
 from bleak.uuids import uuid16_dict
@@ -53,11 +57,87 @@ BATTERY_LEVEL_UUID = "0000{0:x}-0000-1000-8000-00805f9b34fb".format(
 #
 CHANNEL_1_DATA_UUID = "45544942-4c55-4554-4845-524db87ad701"
 CHANNEL_2_DATA_UUID = "45544942-4c55-4554-4845-524db87ad703"
-UNKNOWN_UUID = "45544942-4c55-4554-4845-524db87ad705"
+COMMANDS_NOTIFICATIONS_UUID = "45544942-4c55-4554-4845-524db87ad705"
 CHANNEL_1_CONFIG_UUID = "45544942-4C55-4554-4845-524DB87AD707"
 CHANNEL_2_CONFIG_UUID = "45544942-4c55-4554-4845-524db87ad708"
 DEVICE_CONFIG_UUID = "45544942-4c55-4554-4845-524db87ad709"
 TRIM_UUID = "45544942-4c55-4554-4845-524db87ad70a"
+
+
+def getProbeType(probe_index, probe_data):
+    # Data for probe type is packed into the last byte of the
+    # Device Config packet - the first 4 bits are the first channel
+    # the second four bits are the second channel, if we want to access
+    # the data for the second channel, we bitshift 4 spaces to the left
+    # An example byte for probe data is 17 - or 0001 0001 in binary
+    # which when bitshifted, gives us the probe type for each channel
+    if probe_index == 1:
+        probe_data >>= 4
+    # To get the probe type, they are indexed as:
+    # 0: Pluggable K Type Thermocouple
+    # 1: Fixed K Type Thermocouple
+    # Anything else: Unknown
+    #
+    # We bitwise AND the data to filter for only the sensor index we are interested in
+    # In this case, 15 int == 0000 1111 in binary - bitwise ANDing this against our value
+    # selects only the four least significant bits of data, which we then use the integer
+    # representation of to select our probe type
+    probe_type = probe_data & 15
+    if probe_type != 1:
+        if probe_type != 2:
+            return "Unknown"
+        return "Fixed K Type"
+    return "Pluggable K Type"
+
+
+def getNotificationType(notification_data):
+    match notification_data:
+        case 0:
+            return "NONE"
+        case 1:
+            return "BUTTON PRESSED"
+        case 2:
+            return "SHUTDOWN"
+        case 3:
+            return "INVALID SETTING"
+        case 4:
+            return "INVALID COMMAND"
+        case 5:
+            return "COMMUNICATION_ERROR"
+        case 6:
+            return "UNKNOWN NOTIFICATION"
+        case 7:
+            return "CHECKPOINT"
+        case 8:
+            return "REQUEST REFRESH"
+        case _:
+            return "UNKNOWN NOTIFICATION"
+
+
+def getCommandType(command_data):
+    if command_data == 0:
+        return [16, "Measure"]
+    elif command_data == 1:
+        return [32, "Identify"]
+    elif command_data == 2:
+        return [48, "Set Defaults"]
+    elif command_data != 3:
+        return [0, "None"]
+    else:
+        return [64, "Factory Reset"]
+
+
+def decodeTemp(temp):
+    return round(struct.unpack('<f', temp)[0], 2)
+
+
+async def writeData(client, uuid, data):
+    await client.write_gatt_char(uuid, data)
+    await client.read_gatt_char(uuid)
+
+
+async def notification_handler(characteristic, data):
+    print(f"{characteristic.description}: {data}")
 
 
 async def main(address):
@@ -90,6 +170,46 @@ async def main(address):
         serial_number = await client.read_gatt_char(SERIAL_NUMBER_UUID)
         print(f"Serial Number: {''.join(map(chr, serial_number))}")
 
+        # Device Config Characteristic
+        device_config = await client.read_gatt_char(DEVICE_CONFIG_UUID)
+        print(f"\nDevice Config Bytes: {device_config.hex(' ')}")
+        temp_unit = device_config[0]
+        measurement_interval = device_config[1]
+        # Either this or the other unknown byte are Emissivity
+        unknown_byte_1 = device_config[2]
+        auto_power_off = device_config[3]
+        unknown_byte_2 = device_config[4]
+        channel_2_enable = bool(device_config[5])
+        probe_type = device_config[6]
+
+        temp_unit_symbol = ""
+        if temp_unit == 0:
+            temp_unit_symbol = "°C"
+            print(f"Temp unit: {temp_unit_symbol}")
+        elif temp_unit == 1:
+            temp_unit_symbol = "°F"
+            print(f"Temp unit: {temp_unit_symbol}")
+        else:
+            print("Temp unit: Unknown data")
+
+        print(f"Measurement Interval: {measurement_interval}s")
+
+        print(f"Unknown byte: {unknown_byte_1}")
+
+        if auto_power_off == 0:
+            print("Auto Power Off: False")
+        else:
+            print(
+                f"Auto Power Off: {auto_power_off}mins ({auto_power_off/60}h)")
+
+        print(f"Unknown byte: {unknown_byte_2}")
+
+        print(f"Channel 2 Enabled: {channel_2_enable}")
+
+        print(f"Channel 1 Probe Type: {getProbeType(0, probe_type)}")
+        if channel_2_enable:
+            print(f"Channel 2 Probe Type: {getProbeType(1, probe_type)}")
+
         # Channel name and alarm configuration
         print("\nCustom Characteristics:\n")
         probe_1_data = await client.read_gatt_char(CHANNEL_1_CONFIG_UUID)
@@ -112,9 +232,9 @@ async def main(address):
         print(f"Channel 1 Config Bytes: {probe_1_data.hex(' ')}")
         print(f"Channel 1 Name: {probe_1_name}")
         print(
-            f"Channel 1 Alarm Low: {probe_1_alarm_low}")
+            f"Channel 1 Alarm Low: {probe_1_alarm_low}{temp_unit_symbol}")
         print(
-            f"Channel 1 Alarm High: {probe_1_alarm_high}")
+            f"Channel 1 Alarm High: {probe_1_alarm_high}{temp_unit_symbol}")
 
         probe_2_data = await client.read_gatt_char(CHANNEL_2_CONFIG_UUID)
         probe_2_name_data = probe_2_data[8:20]
@@ -135,43 +255,9 @@ async def main(address):
         print(f"Channel 2 Config Bytes: {probe_2_data.hex(' ')}")
         print(f"Channel 2 Name: {probe_2_name}")
         print(
-            f"Channel 2 Alarm Low: {probe_2_alarm_low}")
+            f"Channel 2 Alarm Low: {probe_2_alarm_low}{temp_unit_symbol}")
         print(
-            f"Channel 2 Alarm High: {probe_2_alarm_high}")
-
-        # Device Config Characteristic
-        device_config = await client.read_gatt_char(DEVICE_CONFIG_UUID)
-        print(f"\nDevice Config Bytes: {device_config.hex(' ')}")
-        temp_unit = device_config[0]
-        measurement_interval = device_config[1]
-        unknown_byte_1 = device_config[2]
-        auto_power_off = device_config[3]
-        unknown_byte_2 = device_config[4]
-        channel_2_enable = bool(device_config[5])
-        unknown_byte_3 = device_config[6]
-
-        if temp_unit == 0:
-            print("Temp unit: °C")
-        elif temp_unit == 1:
-            print("Temp unit: °F")
-        else:
-            print("Temp unit: Unknown data")
-
-        print(f"Measurement Interval: {measurement_interval}s")
-
-        print(f"Unknown byte: {unknown_byte_1}")
-
-        if auto_power_off == 0:
-            print("Auto Power Off: False")
-        else:
-            print(
-                f"Auto Power Off: {auto_power_off}mins ({auto_power_off/60}h)")
-
-        print(f"Unknown byte: {unknown_byte_2}")
-
-        print(f"Channel 2 Enabled: {channel_2_enable}")
-
-        print(f"Unknown byte: {unknown_byte_3}")
+            f"Channel 2 Alarm High: {probe_2_alarm_high}{temp_unit_symbol}")
 
         # Channel 1 temp reading - notifiable
         channel_1 = await client.read_gatt_char(CHANNEL_1_DATA_UUID)
@@ -181,7 +267,8 @@ async def main(address):
         if math.isnan(channel_1_temp):
             print("Channel 1 Temp (notifiable): No Probe")
         else:
-            print(f"Channel 1 Temp (notifiable): {channel_1_temp}")
+            print(
+                f"Channel 1 Temp (notifiable): {channel_1_temp}{temp_unit_symbol}")
 
         # Channel 2 temp reading - notifiable
         channel_2 = await client.read_gatt_char(CHANNEL_2_DATA_UUID)
@@ -193,7 +280,8 @@ async def main(address):
         elif math.isnan(channel_2_temp):
             print("Channel 2 Temp (notifiable): No Probe")
         else:
-            print(f"Channel 2 Temp (notifiable): {channel_2_temp}")
+            print(
+                f"Channel 2 Temp (notifiable): {channel_2_temp}{temp_unit_symbol}")
 
         # Channel temperature trim config
         trim_data = await client.read_gatt_char(TRIM_UUID)
@@ -201,19 +289,40 @@ async def main(address):
 
         trim_channel_1_temp_data = struct.unpack('<f', trim_data[:4])
         trim_channel_1 = round(trim_channel_1_temp_data[0], 2)
-        unknown_channel_1 = trim_data[4:7]
-        print(f"Channel 1 Trim: {trim_channel_1}")
-        print(f"Channel 1 Unknown: {unknown_channel_1}")
+        trim_channel_1_date_set = f"{trim_data[4]}/{trim_data[5]}/{trim_data[6]}"
+        print(f"Channel 1 Trim: {trim_channel_1}{temp_unit_symbol}")
+        print(f"Channel 1 Trim Date Set: {trim_channel_1_date_set}")
 
         trim_channel_2_temp_data = struct.unpack('<f', trim_data[7:11])
         trim_channel_2 = round(trim_channel_2_temp_data[0], 2)
-        unknown_channel_2 = trim_data[11:]
-        print(f"Channel 2 Trim: {trim_channel_2}")
-        print(f"Channel 2 Unknown: {unknown_channel_2}")
+        trim_channel_2_date_set = f"{trim_data[11]}/{trim_data[12]}/{trim_data[13]}"
+        print(f"Channel 2 Trim: {trim_channel_2}{temp_unit_symbol}")
+        print(f"Channel 2 Trim Date Set: {trim_channel_2_date_set}")
 
-        # Unknown service - notifiable
-        unknown = await client.read_gatt_char(UNKNOWN_UUID)
-        print(f"\nUnknown Service Bytes (notifiable): {unknown.hex(' ')}")
+        # Commands and Notifications Service - notifiable
+        commands_notifications_data = await client.read_gatt_char(COMMANDS_NOTIFICATIONS_UUID)
+        print("\nCommands and Notifications Bytes (notifiable): "
+              f"{commands_notifications_data.hex(' ')}")
+        command_data = struct.unpack(
+            '1B', commands_notifications_data[0:1])[0]
+        notification_data = struct.unpack(
+            '1B', commands_notifications_data[1:2])[0]
+        print(f"Command: {getCommandType(command_data)[1]}")
+        print(
+            f"Notification: {getNotificationType(notification_data)}")
+
+        # await client.start_notify(CHANNEL_1_DATA_UUID, notification_handler)
+        # await client.start_notify(CHANNEL_2_DATA_UUID, notification_handler)
+        # await client.start_notify(BATTERY_LEVEL_UUID, notification_handler)
+        # await asyncio.sleep(5)
+        # await client.stop_notify(CHANNEL_1_DATA_UUID)
+        # await client.stop_notify(CHANNEL_2_DATA_UUID)
+        # await client.stop_notify(BATTERY_LEVEL_UUID)
+
+        # Identify command
+        # write_data = bytearray(
+        #     b'\x20\x00')
+        # await writeData(client, COMMANDS_NOTIFICATIONS_UUID, write_data)
 
 
 async def scan_ble_devices():
